@@ -1,0 +1,78 @@
+name: Compilar mod
+
+# Se ejecuta en cada subida al repositorio y también a mano (pestaña Actions -> Run workflow).
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v6
+
+      # Funciona tanto si subiste los archivos sueltos como si subiste el .zip tal cual.
+      - name: Buscar el proyecto (archivos sueltos o un .zip)
+        id: proyecto
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f settings.gradle ] && [ -f build.gradle ]; then
+            DIR="."
+          else
+            BUSCAR="."
+            ZIP="$(find . -path ./.git -prune -o -type f -iname '*.zip' -print | head -n 1)"
+            if [ -n "$ZIP" ]; then
+              echo "Descomprimiendo: $ZIP"
+              rm -rf _proyecto
+              mkdir _proyecto
+              unzip -q "$ZIP" -d _proyecto
+              BUSCAR="_proyecto"
+            fi
+            AJUSTES="$(find "$BUSCAR" -path ./.git -prune -o -type f -name settings.gradle -print | head -n 1)"
+            if [ -z "$AJUSTES" ]; then
+              echo "::error::No encontré el proyecto. Sube el .zip del mod (o sus archivos) a la raíz del repositorio."
+              exit 1
+            fi
+            DIR="$(dirname "$AJUSTES")"
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Proyecto encontrado en: $DIR"
+
+      - name: Instalar Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compilar con Gradle
+        working-directory: ${{ steps.proyecto.outputs.dir }}
+        run: |
+          chmod +x gradlew
+          ./gradlew build --no-daemon --stacktrace
+
+      - name: Subir el .jar (Artifacts)
+        uses: actions/upload-artifact@v6
+        with:
+          name: juegosdelpatio-mod
+          path: ${{ steps.proyecto.outputs.dir }}/build/libs/*.jar
+          if-no-files-found: error
+
+      - name: Publicar el .jar en Releases
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIR: ${{ steps.proyecto.outputs.dir }}
+        run: |
+          JAR="$(ls "$DIR"/build/libs/*.jar | grep -v -e '-sources' -e '-javadoc' | head -n 1)"
+          gh release delete ultima --yes --cleanup-tag || true
+          gh release create ultima "$JAR" \
+            --title "Última compilación" \
+            --notes "Compilado automáticamente desde el commit ${GITHUB_SHA::7}." \
+            --target "$GITHUB_SHA"
